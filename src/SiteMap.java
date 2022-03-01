@@ -22,6 +22,7 @@ public class SiteMap {
         excludingUrls.add(urlString);
         //buildTree(root, excludingUrls, host, 0, maxNestingLevel);
         buildTreeAsync(root, host, 0, maxNestingLevel);
+
         return root.toString(0);
     }
 
@@ -53,6 +54,7 @@ public class SiteMap {
             }
             depth++;
         }
+        threadPool.shutdown();
         System.out.println("Выходим");
     }
 
@@ -93,9 +95,9 @@ class CallableBuildTree implements Callable<LinkNode> {
 
     @Override
     public LinkNode call() {
-        System.out.println(Thread.currentThread().getId());
-        System.out.println(excludingUrls.stream().findFirst().get());
-        System.out.println(depth);
+        //System.out.println(Thread.currentThread().getId());
+        //System.out.println(excludingUrls.stream().findFirst().get());
+        //System.out.println(depth);
         if (depth > 3)
             return node;
         Elements links = JsoupParser.getAllLinksFrom(node.url);

@@ -5,69 +5,45 @@ import java.io.IOException;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class SiteMap {
-    private final ArrayDeque<LinkNode> queue = new ArrayDeque<>();
-    private final Set<String> excludingUrls = new ConcurrentSkipListSet<>();
 
-    public String BuildMdSiteMap(String urlString, int maxNestingLevel) throws IOException, ExecutionException, InterruptedException {
+    public String BuildMdSiteMap(String urlString, int maxNestingLevel) throws IOException, InterruptedException {
 
         URL url = new URL(urlString);
         String host = url.getHost();
         LinkNode root = new LinkNode(urlString, host);
-        Set<String> excludingUrls = new HashSet<>();
-        excludingUrls.add(urlString);
-        //buildTree(root, excludingUrls, host, 0, maxNestingLevel);
-        buildTreeAsync(root, host, 0, maxNestingLevel);
-
-        return root.toString(0);
+        LinkNode tree = buildTreeAsync(root, host, maxNestingLevel);
+        return tree.toString(0);
     }
 
-    private void buildTreeAsync(LinkNode node, String hostName, int currentNestedLevel, int maxNestingLevel) throws InterruptedException, ExecutionException {
-        int nestingLevel = 0;
+    private LinkNode buildTreeAsync(LinkNode node, String hostName, int maxNestingLevel) throws InterruptedException {
+
+        ArrayDeque<LinkNode> queue = new ArrayDeque<>();
+        Set<String> excludingUrls = new ConcurrentSkipListSet<>();
+
         queue.add(node);
+        excludingUrls.add(node.url);
+        int nestingLevel = 0;
 
         while (queue.size() != 0){
-
-            int size = queue.size();
-            ArrayList<LinkNode> stepNodes = new ArrayList<>();
-            Thread lastThread = new Thread();
-
-            for (int i = 0; i < size; i++){
-                LinkNode current = queue.pop();
-                stepNodes.add(current);
-                Thread thread = new Thread(new CallableBuildTree(current, excludingUrls, hostName, nestingLevel));
+            Thread lastThread = null;
+            for (LinkNode linkNode : queue){
+                Thread thread = new Thread(new CallableBuildTree(linkNode, excludingUrls, hostName, nestingLevel, maxNestingLevel));
                 lastThread = thread;
                 thread.start();
             }
             lastThread.join();
 
-            for (LinkNode linkNode : stepNodes){
-                queue.addAll(linkNode.getChilds());
+            ArrayDeque<LinkNode> nextLevelQueue = new ArrayDeque<>();
+            for (LinkNode linkNode : queue){
+                nextLevelQueue.addAll(linkNode.getNested());
             }
+            queue = nextLevelQueue;
             nestingLevel++;
         }
-        System.out.println("Выходим");
-    }
-
-    private void buildTree(LinkNode node, Set<String> excludingUrls, String hostName, int currentNestedLevel, int maxNestingLevel) {
-        if (currentNestedLevel >= maxNestingLevel)
-            return;
-        Elements links = JsoupParser.getAllLinksFrom(node.url);
-        for (Element link : links) {
-            String linkUrl = link.attr("abs:href");
-            String linkTitle = link.text();
-            if (!excludingUrls.contains(linkUrl) && !excludingUrls.contains(linkTitle) && linkUrl.contains(hostName)) {
-                node.addChild(new LinkNode(linkUrl, linkTitle));
-                excludingUrls.add(linkUrl);
-                excludingUrls.add(linkTitle);
-            }
-        }
-
-        for (LinkNode link : node.getChilds()) {
-            //System.out.println(String.format("Переход по ссылке - %s - %s", link.title, link.url));
-            buildTree(link, excludingUrls, hostName, currentNestedLevel + 1, maxNestingLevel);
-        }
+        return node;
     }
 }
 
@@ -77,56 +53,53 @@ class CallableBuildTree implements Runnable {
     Set<String> excludingUrls;
     String hostName;
     int depth;
+    int maxDepth;
 
-    public CallableBuildTree(LinkNode node, Set<String> excludingUrls, String hostName, int depth){
+    public CallableBuildTree(LinkNode node, Set<String> excludingUrls, String hostName, int depth, int maxDepth){
         this.node = node;
         this.excludingUrls = excludingUrls;
         this.hostName = hostName;
         this.depth = depth;
+        this.maxDepth = maxDepth;
     }
 
     @Override
     public void run() {
-        System.out.printf("Зашел поток с id %d\n",Thread.currentThread().getId());
-        System.out.printf("Количество уже встреченных ссылок - %d\n",excludingUrls.size());
-        System.out.printf("Уровень вложенности %d\n\n",depth);
-        if (depth >= 3)
+        if (depth >= maxDepth)
             return;
         Elements links = JsoupParser.getAllLinksFrom(node.url);
         for (Element link : links) {
             String linkUrl = link.attr("abs:href");
             String linkTitle = link.text();
-            if (!excludingUrls.contains(linkUrl) && !excludingUrls.contains(linkTitle) && linkUrl.contains(hostName)) {
-                node.addChild(new LinkNode(linkUrl, linkTitle));
+
+            if (!excludingUrls.contains(linkUrl) && linkUrl.contains(hostName)) {
+                node.addNested(new LinkNode(linkUrl, linkTitle));
                 excludingUrls.add(linkUrl);
                 excludingUrls.add(linkTitle);
             }
         }
-        return;
     }
 }
 
 class LinkNode {
     public final String url;
     public final String title;
-    private final Set<LinkNode> childs;
+    private final Set<LinkNode> nested;
 
 
     LinkNode(String url, String title) {
         this.url = url;
         this.title = title;
-        childs = new HashSet<>();
+        nested = new HashSet<>();
     }
 
-    public boolean addChild(LinkNode child) {
-        if (child == null)
-            return false;
-        childs.add(child);
-        return true;
+    public void addNested(LinkNode child) {
+        if (child != null)
+            nested.add(child);
     }
 
-    public Set<LinkNode> getChilds() {
-        return new HashSet<>(childs);
+    public Set<LinkNode> getNested() {
+        return new HashSet<>(nested);
     }
 
     public String toString() {
@@ -134,14 +107,17 @@ class LinkNode {
     }
 
     public String toString(int nestedLevel){
-        //System.out.println("Я toString, собираю строку");
+
         StringBuilder builder = new StringBuilder();
         builder
                 .append("\t".repeat(nestedLevel))
                 .append(this)
                 .append("\n");
 
-        for (LinkNode nested : childs) {
+        for (LinkNode nested : nested
+                .stream()
+                .sorted(Comparator.comparing(l -> l.title))
+                .collect(Collectors.toList())) {
             builder.append(nested.toString(nestedLevel + 1));
         }
 

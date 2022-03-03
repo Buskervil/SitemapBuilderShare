@@ -4,14 +4,11 @@ import org.jsoup.select.Elements;
 import java.io.IOException;
 import java.net.URL;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 public class SiteMap {
     private final ArrayDeque<LinkNode> queue = new ArrayDeque<>();
-    private final Set<String> excludingUrls = new HashSet<>();
+    private final Set<String> excludingUrls = new ConcurrentSkipListSet<>();
 
     public String BuildMdSiteMap(String urlString, int maxNestingLevel) throws IOException, ExecutionException, InterruptedException {
 
@@ -27,34 +24,29 @@ public class SiteMap {
     }
 
     private void buildTreeAsync(LinkNode node, String hostName, int currentNestedLevel, int maxNestingLevel) throws InterruptedException, ExecutionException {
-        excludingUrls.add(hostName);
-        ExecutorService threadPool = Executors.newFixedThreadPool(8);
-        queue.add(new CallableBuildTree(node, excludingUrls, hostName, 0).call());
-//        for(LinkNode ln : queue){
-//            for (LinkNode lln : ln.getChilds())
-//                System.out.println(lln.title);
-//        }
-        int depth = 1;
-        while(queue.size() > 0){
-            int sise = queue.size();
-            for (int i = 0; i < sise; i++){
-                LinkNode ln = queue.pop();
-                //excludingUrls.add(ln.title);
-                //excludingUrls.add(ln.url);
+        int nestingLevel = 0;
+        queue.add(node);
 
-                //Thread.sleep(100);
-                Set<LinkNode> childs = threadPool.submit(new CallableBuildTree(ln, excludingUrls, hostName, depth)).get().getChilds();
-                for (LinkNode lnode : childs){
-                    //if(!excludingUrls.contains(lnode.url) && !excludingUrls.contains(lnode.title) && lnode.url.contains(hostName))
-                        queue.add(lnode);
-                }
-//                for(LinkNode lln : queue){
-//                    System.out.println(lln.title);
-//                }
+        while (queue.size() != 0){
+
+            int size = queue.size();
+            ArrayList<LinkNode> stepNodes = new ArrayList<>();
+            Thread lastThread = new Thread();
+
+            for (int i = 0; i < size; i++){
+                LinkNode current = queue.pop();
+                stepNodes.add(current);
+                Thread thread = new Thread(new CallableBuildTree(current, excludingUrls, hostName, nestingLevel));
+                lastThread = thread;
+                thread.start();
             }
-            depth++;
+            lastThread.join();
+
+            for (LinkNode linkNode : stepNodes){
+                queue.addAll(linkNode.getChilds());
+            }
+            nestingLevel++;
         }
-        threadPool.shutdown();
         System.out.println("Выходим");
     }
 
@@ -79,7 +71,7 @@ public class SiteMap {
     }
 }
 
-class CallableBuildTree implements Callable<LinkNode> {
+class CallableBuildTree implements Runnable {
 
     LinkNode node;
     Set<String> excludingUrls;
@@ -94,12 +86,12 @@ class CallableBuildTree implements Callable<LinkNode> {
     }
 
     @Override
-    public LinkNode call() {
-        //System.out.println(Thread.currentThread().getId());
-        //System.out.println(excludingUrls.stream().findFirst().get());
-        //System.out.println(depth);
-        if (depth > 3)
-            return node;
+    public void run() {
+        System.out.printf("Зашел поток с id %d\n",Thread.currentThread().getId());
+        System.out.printf("Количество уже встреченных ссылок - %d\n",excludingUrls.size());
+        System.out.printf("Уровень вложенности %d\n\n",depth);
+        if (depth >= 3)
+            return;
         Elements links = JsoupParser.getAllLinksFrom(node.url);
         for (Element link : links) {
             String linkUrl = link.attr("abs:href");
@@ -110,7 +102,7 @@ class CallableBuildTree implements Callable<LinkNode> {
                 excludingUrls.add(linkTitle);
             }
         }
-        return node;
+        return;
     }
 }
 
@@ -142,7 +134,7 @@ class LinkNode {
     }
 
     public String toString(int nestedLevel){
-        System.out.println("Я toString, собираю строку");
+        //System.out.println("Я toString, собираю строку");
         StringBuilder builder = new StringBuilder();
         builder
                 .append("\t".repeat(nestedLevel))
